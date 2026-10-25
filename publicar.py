@@ -71,7 +71,8 @@ def conferir_url(url):
 def publicar_reel(arquivos, legenda):
     url = f"{BASE_URL}/{arquivos[0]}"; conferir_url(url)
     c = chamar("POST", f"{IG_USER_ID}/media",
-               {"media_type": "REELS", "video_url": url, "caption": legenda, "share_to_feed": "true"})["id"]
+               {"media_type": "REELS", "video_url": url, "caption": legenda, "share_to_feed": "true",
+                "thumb_offset": "4000"})["id"]   # capa = quadro aos 4 s (o 1º quadro é preto: o vídeo abre em fade)
     esperar(c)
     return chamar("POST", f"{IG_USER_ID}/media_publish", {"creation_id": c})["id"]
 

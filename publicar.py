@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Publica no Instagram (API oficial da Meta, "Instagram API com login do Instagram") o que está
-agendado em calendario.csv. Roda no GitHub Actions, mas funciona em qualquer lugar com Python 3.
+agendado em calendario.csv (reels, carrosséis) e calendario_testes.csv (REELS DE TESTE / trial reels). Roda no GitHub Actions, mas funciona em qualquer lugar com Python 3.
 
 Segredos / variáveis de ambiente:
   IG_USER_ID   id numérico da conta profissional (aparece no painel do app, ao gerar o token)
@@ -30,6 +30,8 @@ G = "https://graph.instagram.com" + (f"/{VER}" if VER else "")
 SIMULAR = "--simular" in sys.argv
 arg = lambda nome: next((a.split("=", 1)[1] for a in sys.argv if a.startswith(f"--{nome}=")), None)
 LOG = f"{AQUI}/postado.csv"
+# cada calendário tem o seu próprio registro: o dos testes nunca mexe no do calendário principal
+CALENDARIOS = [("calendario.csv", "postado.csv"), ("calendario_testes.csv", "postado_testes.csv")]
 
 
 def chamar(metodo, caminho, params=None):
@@ -77,6 +79,17 @@ def publicar_reel(arquivos, legenda):
     return chamar("POST", f"{IG_USER_ID}/media_publish", {"creation_id": c})["id"]
 
 
+def publicar_reel_teste(arquivos, legenda):
+    """Reel de teste (trial reel): só aparece para quem ainda não segue a conta. Não sai no feed dos seguidores
+    até o dono decidir 'compartilhar com seguidores' no app (graduação MANUAL)."""
+    url = f"{BASE_URL}/{arquivos[0]}"; conferir_url(url)
+    c = chamar("POST", f"{IG_USER_ID}/media",
+               {"media_type": "REELS", "video_url": url, "caption": legenda, "thumb_offset": "4000",
+                "trial_params": json.dumps({"graduation_strategy": "MANUAL"})})["id"]
+    esperar(c)
+    return chamar("POST", f"{IG_USER_ID}/media_publish", {"creation_id": c})["id"]
+
+
 def publicar_carrossel(arquivos, legenda):
     filhos = []
     for a in arquivos:
@@ -96,7 +109,7 @@ def publicar_imagem(arquivos, legenda):
     return chamar("POST", f"{IG_USER_ID}/media_publish", {"creation_id": c})["id"]
 
 
-FUNCOES = {"reel": publicar_reel, "carrossel": publicar_carrossel, "imagem": publicar_imagem}
+FUNCOES = {"reel": publicar_reel, "reel_teste": publicar_reel_teste, "carrossel": publicar_carrossel, "imagem": publicar_imagem}
 
 
 def renovar():
@@ -116,10 +129,10 @@ def verificar():
         print("::warning::IG_USER_ID não bate com a conta do token:", r)
 
 
-def ler_log():
-    if not os.path.exists(LOG):
+def ler_log(log=LOG):
+    if not os.path.exists(log):
         return set()
-    return {l.split(";")[0] for l in open(LOG, encoding="utf-8").read().splitlines() if l}
+    return {l.split(";")[0] for l in open(log, encoding="utf-8").read().splitlines() if l}
 
 
 def main():
@@ -130,32 +143,46 @@ def main():
     agora = datetime.datetime.now(ZoneInfo("America/Sao_Paulo"))
     data_hoje = arg("data") or agora.date().isoformat()
     hora_agora = agora.strftime("%H:%M") if not arg("data") else "23:59"
-    with open(f"{AQUI}/calendario.csv", encoding="utf-8-sig") as f:
-        linhas = list(csv.DictReader(f, delimiter=";"))
-    feitos = ler_log()
-    if arg("id"):
-        devidos = [r for r in linhas if r["id"] == arg("id")]
-    else:
-        # tudo o que já passou do horário de hoje (ou de dias anteriores, se algum dia falhou) e ainda não saiu
-        devidos = [r for r in linhas if r["id"] not in feitos and (r["data"], r["horario"]) <= (data_hoje, hora_agora)]
-        # só recupera atrasos de até 2 dias, para nunca despejar uma fila antiga de uma vez
-        limite = (datetime.date.fromisoformat(data_hoje) - datetime.timedelta(days=2)).isoformat()
-        devidos = [r for r in devidos if r["data"] >= limite]
-    if not devidos:
-        print(f"Nada a publicar agora ({data_hoje} {hora_agora}).")
-        return
-    if not SIMULAR and not (IG_USER_ID and TOKEN and BASE_URL):
-        raise SystemExit("Faltam IG_USER_ID, IG_TOKEN ou BASE_URL.")
-    for r in devidos:
-        arqs = r["arquivos"].split("|")
-        print(f"[{r['id']}] {r['data']} {r['horario']} {r['tipo']}: {r['frase']}")
-        if SIMULAR:
-            print(f"   [simulação] {[f'{BASE_URL or '<BASE_URL>'}/{a}' for a in arqs]}")
+    for cal, log in CALENDARIOS:
+        caminho_cal = f"{AQUI}/{cal}"
+        if not os.path.exists(caminho_cal):
             continue
-        media_id = FUNCOES[r["tipo"]](arqs, r["legenda"])
-        print(f"   publicado: {media_id}")
-        with open(LOG, "a", encoding="utf-8") as f:
-            f.write(f"{r['id']};{r['data']};{r['tipo']};{media_id}\n")
+        with open(caminho_cal, encoding="utf-8-sig") as f:
+            linhas = list(csv.DictReader(f, delimiter=";"))
+        caminho_log = f"{AQUI}/{log}"
+        feitos = ler_log(caminho_log)
+        if arg("id"):
+            devidos = [r for r in linhas if r["id"] == arg("id")]
+        else:
+            # tudo o que já passou do horário de hoje (ou de dias anteriores, se algum dia falhou) e ainda não saiu
+            devidos = [r for r in linhas if r["id"] not in feitos and (r["data"], r["horario"]) <= (data_hoje, hora_agora)]
+            # só recupera atrasos de até 2 dias, para nunca despejar uma fila antiga de uma vez
+            limite = (datetime.date.fromisoformat(data_hoje) - datetime.timedelta(days=2)).isoformat()
+            devidos = [r for r in devidos if r["data"] >= limite]
+        if not devidos:
+            print(f"[{cal}] Nada a publicar agora ({data_hoje} {hora_agora}).")
+            continue
+        if not SIMULAR and not (IG_USER_ID and TOKEN and BASE_URL):
+            raise SystemExit("Faltam IG_USER_ID, IG_TOKEN ou BASE_URL.")
+        for r in devidos:
+            arqs = r["arquivos"].split("|")
+            print(f"[{r['id']}] {r['data']} {r['horario']} {r['tipo']}: {r['frase']}")
+            if SIMULAR:
+                print(f"   [simulação] {[f'{BASE_URL or '<BASE_URL>'}/{a}' for a in arqs]}")
+                continue
+            try:
+                media_id = FUNCOES[r["tipo"]](arqs, r["legenda"])
+            except SystemExit as e:
+                if r["tipo"] != "reel_teste":
+                    raise  # reel/carrossel normal: falha continua parando tudo, como sempre foi
+                # o reel de teste depende de um recurso da API que pode ser recusado: registra e segue, sem insistir a cada 30 min
+                print(f"   ::warning::reel de teste {r['id']} recusado: {e}")
+                with open(caminho_log, "a", encoding="utf-8") as f:
+                    f.write(f"{r['id']};{r['data']};{r['tipo']};ERRO-nao-repetir\n")
+                continue
+            print(f"   publicado: {media_id}")
+            with open(caminho_log, "a", encoding="utf-8") as f:
+                f.write(f"{r['id']};{r['data']};{r['tipo']};{media_id}\n")
 
 
 if __name__ == "__main__":
